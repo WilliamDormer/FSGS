@@ -21,7 +21,7 @@ import torch
 from torchmetrics import PearsonCorrCoef
 from torchmetrics.functional.regression import pearson_corrcoef
 from random import randint
-from utils.loss_utils import l1_loss, l1_loss_mask, l2_loss, ssim
+from utils.loss_utils import l1_loss, l1_loss_mask, l2_loss, ssim, predicted_normal_loss, delta_normal_loss, zero_one_loss
 from utils.depth_utils import estimate_depth
 from gaussian_renderer import render, network_gui
 import sys
@@ -40,7 +40,8 @@ def training(dataset, opt, pipe, args):
             args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(args)
+    # New Shader Args
+    gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, dataset.brdf_mode, dataset.brdf_envmap_res, args)
     scene = Scene(args, gaussians, shuffle=False)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -85,17 +86,39 @@ def training(dataset, opt, pipe, args):
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+
+        # New Shader
+        if pipe.brdf:
+            gaussians.set_requires_grad("normal", state=iteration >= opt.normal_reg_from_iter)
+            gaussians.set_requires_grad("normal2", state=iteration >= opt.normal_reg_from_iter)
+            if gaussians.brdf_mode=="envmap":
+                gaussians.brdf_mlp.build_mips()
+        # ============
+
+        # Render
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
+        #New Shader
+        losses_extra = {}
+        if pipe.brdf and iteration > opt.normal_reg_from_iter:
+            if iteration<opt.normal_reg_util_iter:
+                losses_extra['predicted_normal'] = predicted_normal_loss(render_pkg["normal"], render_pkg["normal_ref"], render_pkg["alpha"])
+            losses_extra['zero_one'] = zero_one_loss(render_pkg["alpha"])
+            if "delta_normal_norm" not in render_pkg.keys() and opt.lambda_delta_reg>0: assert()
+            if "delta_normal_norm" in render_pkg.keys():
+                losses_extra['delta_reg'] = delta_normal_loss(render_pkg["delta_normal_norm"], render_pkg["alpha"])
+        #==================
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 =  l1_loss_mask(image, gt_image)
         loss = ((1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)))
-
+        # New Shader
+        for k in losses_extra.keys():
+            loss += getattr(opt, f'lambda_{k}')* losses_extra[k]
+        # =============
 
         rendered_depth = render_pkg["depth"][0]
         midas_depth = torch.tensor(viewpoint_cam.depth_image).cuda()
@@ -149,6 +172,7 @@ def training(dataset, opt, pipe, args):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
+            # !!Checkpoint does not currently save new info!!
             if iteration > first_iter and (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration),
@@ -163,7 +187,10 @@ def training(dataset, opt, pipe, args):
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.prune_threshold, scene.cameras_extent, size_threshold, iteration)
-
+                # New Shader
+                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                    gaussians.reset_opacity()
+                # ===========
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -171,9 +198,16 @@ def training(dataset, opt, pipe, args):
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
             gaussians.update_learning_rate(iteration)
+
+            # We now do this twice...? but for different reasons
             if (iteration - args.start_sample_pseudo - 1) % opt.opacity_reset_interval == 0 and \
                     iteration > args.start_sample_pseudo:
                 gaussians.reset_opacity()
+
+            # New Shader
+            if pipe.brdf and pipe.brdf_mode=="envmap":
+                gaussians.brdf_mlp.clamp_(min=0.0, max=1.0)
+            #===========
 
 
 def prepare_output_and_logger(args):

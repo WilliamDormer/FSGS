@@ -54,12 +54,18 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
-        self.n_views = 0
+        self.n_views = 0 
+        # New Shader 
+        self.brdf_dim = 0
+        self.brdf_mode = "envmap"
+        self.brdf_envmap_res = 64
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+        # New Shader 
+        g.brdf = g.brdf_dim>=0
         return g
 
 class PipelineParams(ParamGroup):
@@ -70,6 +76,17 @@ class PipelineParams(ParamGroup):
         self.use_confidence = False
         self.use_color = True
         super().__init__(parser, "Pipeline Parameters")
+        # New Shader
+        self.brdf = False
+
+    # New Shader
+    def extract(self, args):
+        g = super().extract(args)
+        g.brdf = args.brdf_dim>=0
+        if g.brdf:
+            g.convert_SHs_python = True
+        g.brdf_mode = args.brdf_mode
+        return g
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
@@ -97,6 +114,20 @@ class OptimizationParams(ParamGroup):
         self.dist_thres = 10.
         self.depth_weight = 0.05
         self.depth_pseudo_weight = 0.5
+        # New Shader
+        self.brdf_mlp_lr_init = 1.6e-2
+        self.brdf_mlp_lr_final = 1.6e-3 
+        self.brdf_mlp_lr_delay_mult = 0.01
+        self.brdf_mlp_lr_max_steps = 30_000
+        self.normal_lr = 0.0002
+        self.specular_lr = 0.0002
+        self.roughness_lr = 0.0002
+        self.normal_reg_from_iter = 0
+        self.normal_reg_util_iter = 30_000
+        self.lambda_zero_one = 1e-3
+        self.lambda_predicted_normal = 2e-1
+        self.lambda_delta_reg = 1e-3
+        self.fix_brdf_lr = 0
         super().__init__(parser, "Optimization Parameters")
 
 

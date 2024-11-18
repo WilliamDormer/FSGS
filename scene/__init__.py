@@ -20,6 +20,9 @@ from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
 from utils.pose_utils import generate_random_poses_llff, generate_random_poses_360
 from scene.cameras import PseudoCamera
+#  New Shader
+from utils.system_utils import mkdir_p
+from scene.NVDIFFREC import save_env_map, load_env
 
 class Scene:
 
@@ -85,6 +88,8 @@ class Scene:
                 pseudo_poses = generate_random_poses_llff(self.train_cameras[resolution_scale])
             elif args.source_path.find('360'):
                 pseudo_poses = generate_random_poses_360(self.train_cameras[resolution_scale])
+            elif args._source_path.find('food'):
+                pseudo_poses = generate_random_poses_360(self.train_cameras[resolution_scale])
             view = self.train_cameras[resolution_scale][0]
             for pose in pseudo_poses:
                 pseudo_cams.append(PseudoCamera(
@@ -105,6 +110,11 @@ class Scene:
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        # New Shader
+        if self.gaussians.brdf:
+            brdf_mlp_path = os.path.join(self.model_path, f"brdf_mlp/iteration_{iteration}/brdf_mlp.hdr")
+            mkdir_p(os.path.dirname(brdf_mlp_path))
+            save_env_map(brdf_mlp_path, self.gaussians.brdf_mlp)
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]

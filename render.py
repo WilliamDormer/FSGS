@@ -16,7 +16,7 @@ import os
 from tqdm import tqdm
 import numpy as np
 from os import makedirs
-from gaussian_renderer import render
+from gaussian_renderer import render, render_lighting
 import torchvision
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
@@ -29,7 +29,19 @@ from tqdm import tqdm
 from utils.graphics_utils import getWorld2View2
 from utils.pose_utils import generate_ellipse_path, generate_spiral_path
 from utils.general_utils import vis_depth
+from scene.NVDIFFREC.util import save_image_raw
 
+# New Shader
+def render_lightings(model_path, name, iteration, gaussians, sample_num):
+    lighting_path = os.path.join(model_path, name, "ours_{}".format(iteration))
+    makedirs(lighting_path, exist_ok=True)    
+    # sampled_indicies = torch.randperm(gaussians.get_xyz.shape[0])[:sample_num]
+    sampled_indicies = torch.arange(gaussians.get_xyz.shape[0], dtype=torch.long)[:sample_num]
+    for sampled_index in tqdm(sampled_indicies, desc="Rendering lighting progress"):
+        lighting = render_lighting(gaussians, sampled_index=sampled_index)
+        torchvision.utils.save_image(lighting, os.path.join(lighting_path, '{0:05d}'.format(sampled_index) + ".png"))
+        save_image_raw(os.path.join(lighting_path, '{0:05d}'.format(sampled_index) + ".hdr"), lighting.permute(1,2,0).detach().cpu().numpy())
+# =================
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, args):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
@@ -39,7 +51,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background)
+        # New Shader
+        torch.cuda.synchronize()
+        
+        rendering = render(view, gaussians, pipeline, background, debug=True)
+
+        torch.cuda.synchronize()
+        #============
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering["render"], os.path.join(render_path, view.image_name + '.png'))
                                             #'{0:05d}'.format(idx) + ".png"))
@@ -61,7 +79,9 @@ def render_video(source_path, model_path, iteration, views, gaussians, pipeline,
         render_poses = generate_spiral_path(np.load(source_path + '/poses_bounds.npy'))
     elif source_path.find('360') != -1:
         render_poses = generate_ellipse_path(views)
-
+    elif source_path.find('food') != -1:
+        render_poses = generate_ellipse_path(views)
+        
     size = (view.original_image.shape[2], view.original_image.shape[1])
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     final_video = cv2.VideoWriter(os.path.join(render_path, 'final_video.mp4'), fourcc, fps, size)
@@ -71,7 +91,13 @@ def render_video(source_path, model_path, iteration, views, gaussians, pipeline,
         view.world_view_transform = torch.tensor(getWorld2View2(pose[:3, :3].T, pose[:3, 3], view.trans, view.scale)).transpose(0, 1).cuda()
         view.full_proj_transform = (view.world_view_transform.unsqueeze(0).bmm(view.projection_matrix.unsqueeze(0))).squeeze(0)
         view.camera_center = view.world_view_transform.inverse()[3, :3]
-        rendering = render(view, gaussians, pipeline, background)
+        # added to mirror addition above
+        torch.cuda.synchronize()
+
+        rendering = render(view, gaussians, pipeline, background, debug=True)
+
+        torch.cuda.synchronize()
+        #=====
 
         img = torch.clamp(rendering["render"], min=0., max=1.)
         torchvision.utils.save_image(img, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
@@ -85,7 +111,7 @@ def render_video(source_path, model_path, iteration, views, gaussians, pipeline,
 def render_sets(dataset : ModelParams, pipeline : PipelineParams, args):
 
     with torch.no_grad():
-        gaussians = GaussianModel(args)
+        gaussians = GaussianModel(dataset.sh_degree, dataset.brdf_dim, pipeline.brdf_mode, dataset.brdf_envmap_res, args)
         scene = Scene(args, gaussians, load_iteration=args.iteration, shuffle=False)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
@@ -99,7 +125,9 @@ def render_sets(dataset : ModelParams, pipeline : PipelineParams, args):
             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, args)
         if not args.skip_test:
             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, args)
-
+        # New Shader
+        if pipeline.brdf:
+             render_lightings(dataset.model_path, "lighting", scene.loaded_iter, gaussians, sample_num=1)
 
 
 if __name__ == "__main__":

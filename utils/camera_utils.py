@@ -44,6 +44,13 @@ def loadCam(args, id, cam_info, resolution_scale):
     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
     mask = None if cam_info.mask is None else cv2.resize(cam_info.mask, resolution)
     gt_image = resized_image_rgb[:3, ...]
+    # New Shader
+    if cam_info.normal_image is not None:
+        resized_normal_image_rgb = PILtoTorch(cam_info.normal_image, resolution)
+        gt_normal_image = resized_normal_image_rgb[:3, ...]
+    else:
+        gt_normal_image = None
+    # ================
     loaded_mask = None
 
     depth = estimate_depth(gt_image.cuda()).cpu().numpy()
@@ -54,7 +61,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY,  image=gt_image, gt_alpha_mask=loaded_mask,
                   uid=id, data_device=args.data_device, image_name=cam_info.image_name,
-                  depth_image=depth, mask=mask, bounds=cam_info.bounds)
+                  depth_image=depth, mask=mask, bounds=cam_info.bounds, normal_image=gt_normal_image)
 
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):

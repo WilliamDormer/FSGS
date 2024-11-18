@@ -45,6 +45,8 @@ class CameraInfo(NamedTuple):
     height: int
     mask: np.array
     bounds: np.array
+    normal_image: np.array # New Shader
+    alpha_mask: np.array # New Shader
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -198,7 +200,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, path, rgb_m
         image = Image.open(rgb_path)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_path=image_path,
-                image_name=image_name, width=width, height=height, mask=None, bounds=bounds)
+                image_name=image_name, width=width, height=height, mask=None, bounds=bounds, normal_image=None, alpha_mask=None)
         cam_infos.append(cam_info)
 
     sys.stdout.write('\n')
@@ -319,8 +321,12 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
-        fovx = contents["camera_angle_x"]
-
+        # New Shader
+        if "camera_angle_x" not in contents.keys():
+            fovx = None
+        else:
+            fovx = contents["camera_angle_x"] 
+        # =============
         skip = 8 if transformsfile == 'transforms_test.json' else 1
         frames = contents["frames"][::skip]
         for idx, frame in tqdm(enumerate(frames)):
@@ -348,9 +354,33 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
             image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
 
-            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovy
-            FovX = fovx
+            # New Shader
+            alpha_mask = norm_data[:, :, 3]
+            alpha_mask = Image.fromarray(np.array(alpha_mask*255.0, dtype=np.byte), "L")
+
+            normal_cam_name = os.path.join(path, frame["file_path"] + "_normal" + extension)
+            normal_image_path = os.path.join(path, normal_cam_name)
+            if os.path.exists(normal_image_path):
+                normal_image = Image.open(normal_image_path)
+                
+                normal_im_data = np.array(normal_image.convert("RGBA"))
+                normal_bg_mask = (normal_im_data==128).sum(-1)==3
+                normal_norm_data = normal_im_data / 255.0
+                normal_arr = normal_norm_data[:,:,:3] * normal_norm_data[:, :, 3:4] + bg * (1 - normal_norm_data[:, :, 3:4])
+                normal_arr[normal_bg_mask] = 0
+                normal_image = Image.fromarray(np.array(normal_arr*255.0, dtype=np.byte), "RGB")
+            else:
+                normal_image = None
+
+            if fovx == None:
+                focal_length = contents["fl_x"]
+                FovY = focal2fov(focal_length, image.size[1])
+                FovX = focal2fov(focal_length, image.size[0])
+            else:
+                fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
+                FovY = fovx 
+                FovX = fovy
+            # ==================
 
             mask = norm_data[:, :, 3:4]
             if skip == 1:
@@ -367,7 +397,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, image_path=image_path,
                                         image_name=image_name, width=image.size[0], height=image.size[1],
-                                        depth_image=depth_image, mask=mask))
+                                        depth_image=depth_image, mask=mask, normal_image=normal_image, alpha_mask=alpha_mask))
     return cam_infos
 
 
